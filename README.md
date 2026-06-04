@@ -1,17 +1,14 @@
-# LOAS laundry CLI
+# LOAS Laundry
 
-Tiny browserless CLI for the only supported workflow:
-
-```bash
-laundry list
-laundry list tomorrow
-laundry today both:18h30-19h30 dryer:19h30-20h30
-laundry tomorrow both:18h30-19h30 dryer:19h30-20h30
-```
+Small CLI for listing and booking LOAS laundry slots.
 
 ## Setup
 
+Requires Node.js 18.17+.
+
 ```bash
+git clone https://github.com/cnyegun/loas-laundry.git
+cd loas-laundry
 npm install
 cp .env.example .env
 ```
@@ -24,31 +21,24 @@ LOAS_PASSWORD=your-password
 LOAS_ROOMS_URL=https://intra.loas.fi/complexes/123/leases/456/rooms
 ```
 
-Set `LOAS_ROOMS_URL` to your own LOAS laundry rooms URL. It includes your complex and lease IDs.
+Use your own `LOAS_ROOMS_URL`. Open the LOAS laundry room page in your browser and copy the URL.
 
-Requires Node.js 18.17+.
+## Usage
 
-## List
+List slots:
 
 ```bash
 laundry list
 laundry list tomorrow
 ```
 
-The table colors are:
-
-- `Book` = sky blue
-- `Yours` = green
-- `Booked` / `Past` = gray
-
-## Book
+Book slots:
 
 ```bash
 laundry today both:18h30-19h30 dryer:19h30-20h30
+laundry tomorrow both:18h30-19h30 dryer:19h30-20h30
 ```
 
-That reserves both washing machines from 18:30 to 19:30, then the dryer from 19:30 to 20:30.
+`both` books washing machines 1 and 2. `dryer` books dryer 1.
 
-Supported dates are only `today` and `tomorrow`.
-Supported machines are only `both` and `dryer`.
-Ranges are start-inclusive/end-exclusive and must use 30-minute LOAS slots.
+Times must use 30-minute slots, like `18h30-19h30`.
