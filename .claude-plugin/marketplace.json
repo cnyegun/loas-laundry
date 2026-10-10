@@ -1,0 +1,11 @@
+{
+  "name": "loas-laundry",
+  "description": "Claude Code plugin for checking and booking LOAS laundry slots.",
+  "owner": {
+    "name": "Chi Nguyen",
+    "url": "https://github.com/cnyegun"
+  },
+  "plugins": [
+    { "name": "loas-laundry", "source": "./" }
+  ]
+}

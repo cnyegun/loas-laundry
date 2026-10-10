@@ -1,5 +1,5 @@
 {
-  "name": "loas-laundry-automation",
+  "name": "loas-laundry",
   "version": "0.1.0",
   "private": true,
   "description": "Tiny browserless LOAS laundry CLI.",
@@ -8,7 +8,7 @@
     "node": ">=18.17"
   },
   "bin": {
-    "laundry": "./laundry"
+    "laundry": "src/loas-laundry.js"
   },
   "scripts": {
     "check": "node --check src/loas-laundry.js",
@@ -19,5 +19,8 @@
     "dotenv": "^16.4.7",
     "fetch-cookie": "^3.2.0",
     "tough-cookie": "^6.0.1"
-  }
+  },
+  "files": [
+    "src"
+  ]
 }

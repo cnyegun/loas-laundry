@@ -1,45 +1,81 @@
 #!/usr/bin/env node
 'use strict';
 
+// A .env in the current directory still works, and overrides the saved config.
 require('dotenv').config();
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const readline = require('readline');
 const cheerio = require('cheerio');
 const { CookieJar } = require('tough-cookie');
 const fetchCookieModule = require('fetch-cookie');
 const fetchCookie = fetchCookieModule.default || fetchCookieModule;
 
-const DEFAULT_SESSION_FILE = '.auth/loas-session.json';
+const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'loas-laundry');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const DEFAULT_SESSION_FILE = path.join(CONFIG_DIR, 'session.json');
 
 class UsageError extends Error {}
 
-function usage() {
-  for (const line of [
-    'Usage:',
-    '  laundry list',
-    '  laundry list tomorrow',
-    '  laundry today both:18h30-19h30 dryer:19h30-20h30',
-    '  laundry tomorrow both:18h30-19h30 dryer:19h30-20h30',
-  ]) console.error(line);
-}
-
-function die(message, showUsage = false) {
-  console.error(`Error: ${message}`);
-  if (showUsage) usage();
-  process.exit(1);
-}
+const USAGE = `Usage:
+  laundry setup
+  laundry list
+  laundry list tomorrow
+  laundry today both:18h30-19h30 dryer:19h30-20h30
+  laundry tomorrow both:18h30-19h30 dryer:19h30-20h30`;
 
 function failUsage(message) {
   throw new UsageError(message);
 }
 
+function readSavedConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+const savedConfig = readSavedConfig();
+
 function config(name, fallback = '') {
-  const value = process.env[name];
-  return value && value.trim() ? value.trim() : fallback;
+  const value = String(process.env[name] || savedConfig[name] || '').trim();
+  return value || fallback;
+}
+
+async function setup() {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  // Read through the iterator because it buffers lines, so piped input is not lost.
+  const lines = rl[Symbol.asyncIterator]();
+  const ask = async (question, current = '', hidden = false) => {
+    rl.setPrompt(current ? `${question} [${current}]: ` : `${question}: `);
+    rl.prompt();
+    if (hidden) rl._writeToOutput = () => {};
+    const { value = '' } = await lines.next();
+    return value.trim() || current;
+  };
+
+  console.log('Open the LOAS laundry room page in your browser and copy its URL.');
+  const roomsUrl = await ask('Laundry room URL', savedConfig.LOAS_ROOMS_URL);
+  inferHousingComplexId(roomsUrl);
+  const email = await ask('LOAS email', savedConfig.LOAS_EMAIL);
+  const password = await ask('LOAS password', '', true);
+  rl.close();
+  process.stdout.write('\n');
+  if (!roomsUrl || !email || !password) throw new Error('URL, email and password are all required.');
+
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify({ LOAS_ROOMS_URL: roomsUrl, LOAS_EMAIL: email, LOAS_PASSWORD: password }, null, 2), { mode: 0o600 });
+  fs.chmodSync(CONFIG_FILE, 0o600);
+  // Credentials may have changed, so log in fresh next time.
+  fs.rmSync(DEFAULT_SESSION_FILE, { force: true });
+  console.log(`Saved to ${CONFIG_FILE}. Try: laundry list`);
 }
 
 function parseCommand(argv) {
+  if (argv.length === 1 && argv[0] === 'setup') return { action: 'setup' };
   if (argv.length === 1 && argv[0] === 'list') return { action: 'list', dateToken: 'today' };
   if (argv.length === 2 && argv[0] === 'list' && argv[1] === 'tomorrow') return { action: 'list', dateToken: 'tomorrow' };
   if ((argv[0] === 'today' || argv[0] === 'tomorrow') && argv.length > 1) {
@@ -93,15 +129,13 @@ function formatTime(totalMinutes) {
 }
 
 function helsinkiDate(dateToken) {
-  const offsetDays = dateToken === 'tomorrow' ? 1 : 0;
-  const date = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en', {
-    timeZone: 'Europe/Helsinki',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date).map((part) => [part.type, part.value]));
-  return `${parts.year}-${parts.month}-${parts.day}`;
+  // The sv-SE locale formats dates as YYYY-MM-DD.
+  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Helsinki' });
+  if (dateToken !== 'tomorrow') return today;
+  // Add the day on the calendar date, not as 24 hours, so DST changes cannot skip or repeat a day.
+  const date = new Date(`${today}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
 }
 
 function roomsUrlForDate(roomsUrl, date) {
@@ -130,52 +164,40 @@ function saveCookieJar(jar, file) {
 }
 
 class Session {
-  constructor(baseUrl, cookieFile) {
-    if (typeof globalThis.fetch !== 'function') throw new Error('Node.js 18.17+ is required.');
-
-    this.baseUrl = baseUrl;
+  constructor(cookieFile) {
     this.cookieFile = path.resolve(cookieFile);
     this.jar = loadCookieJar(this.cookieFile);
-    this.fetch = fetchCookie(globalThis.fetch, this.jar);
+    this.fetch = fetchCookie(fetch, this.jar);
   }
 
   async request(url, options = {}) {
-    const response = await this.fetch(new URL(url, this.baseUrl).toString(), {
+    const response = await this.fetch(url, {
       ...options,
       headers: {
         'User-Agent': 'LOAS laundry helper',
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        ...(options.headers || {}),
+        ...options.headers,
       },
     });
     saveCookieJar(this.jar, this.cookieFile);
-    return response;
-  }
-
-  async text(url, options = {}) {
-    const response = await this.request(url, options);
     return {
       ok: response.ok,
       status: response.status,
       statusText: response.statusText,
-      url: response.url || new URL(url, this.baseUrl).toString(),
+      url: response.url || url,
       text: await response.text(),
     };
   }
 
   get(url) {
-    return this.text(url);
+    return this.request(url);
   }
 
   postForm(url, fields, headers = {}) {
-    const params = new URLSearchParams();
-    for (const [name, value] of Object.entries(fields)) {
-      if (value !== undefined && value !== null) params.set(name, String(value));
-    }
-    return this.text(url, {
+    return this.request(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', ...headers },
-      body: params.toString(),
+      body: new URLSearchParams(fields).toString(),
     });
   }
 }
@@ -191,13 +213,7 @@ function isLoginPage($, url = '') {
 }
 
 function loginAction($, currentUrl) {
-  let action = '';
-  $('form').each((_, form) => {
-    if (action) return;
-    const $form = $(form);
-    const candidate = $form.attr('action') || '';
-    if (candidate.includes('/customers/sign_in') || $form.find('input[type="password"]').length) action = candidate;
-  });
+  const action = $('form[action*="/customers/sign_in"], form:has(input[type="password"])').first().attr('action');
   return new URL(action || '/customers/sign_in', currentUrl).toString();
 }
 
@@ -211,7 +227,7 @@ async function ensureLoggedIn(session, roomsUrl, email, password) {
   let page = await session.get(roomsUrl);
   let $ = cheerio.load(page.text);
   if (!isLoginPage($, page.url)) return page;
-  if (!email || !password) throw new Error('LOAS_EMAIL and LOAS_PASSWORD are required when the saved session expires.');
+  if (!email || !password) throw new Error('Email and password are missing. Run: laundry setup');
 
   const action = loginAction($, page.url);
   page = await session.postForm(action, {
@@ -226,7 +242,7 @@ async function ensureLoggedIn(session, roomsUrl, email, password) {
 
   if (!selectedRoomsPage(page.url, roomsUrl)) page = await session.get(roomsUrl);
   $ = cheerio.load(page.text);
-  if (isLoginPage($, page.url)) throw new Error('Still on login page after login. Check credentials.');
+  if (isLoginPage($, page.url)) throw new Error('Still on login page after login. Check your email and password with: laundry setup');
   return page;
 }
 
@@ -238,14 +254,12 @@ function inputValue($form, name) {
   return $form.find(`input[name="${name}"]`).first().attr('value') || '';
 }
 
-function reservationAction(action) {
-  return String(action || '').includes('time_slot_products/') && String(action || '').includes('/time_slot_reservations');
-}
-
 function reservationForm($, form) {
   const $form = $(form);
-  const method = String(inputValue($form, '_method')).toLowerCase();
-  return reservationAction($form.attr('action')) && method !== 'delete' && !text($, form).toLowerCase().includes('cancel');
+  const action = $form.attr('action') || '';
+  return action.includes('time_slot_products/') && action.includes('/time_slot_reservations')
+    && inputValue($form, '_method').toLowerCase() !== 'delete'
+    && !text($, form).toLowerCase().includes('cancel');
 }
 
 function extractTable(html, pageUrl) {
@@ -277,21 +291,17 @@ function extractTable(html, pageUrl) {
   return { headers, rows };
 }
 
-function tableTime(value) {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || '').trim());
-  if (!match) return '';
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
-  return hour >= 0 && hour <= 23 && [0, 30].includes(minute) ? formatTime(hour * 60 + minute) : '';
+// Normalizes "8:00" to "08:00" so rows can be matched against requested times.
+function tableTime(value = '') {
+  const match = /^(\d{1,2}):(00|30)$/.exec(value);
+  return match ? `${match[1].padStart(2, '0')}:${match[2]}` : '';
 }
 
-function machineFromHeader(header) {
-  const value = String(header || '').replace(/Pyykkitupa/gi, '').replace(/\s+/g, ' ').trim().toLowerCase();
-  if (value === 'washing machine 1') return 'washing1';
-  if (value === 'washing machine 2') return 'washing2';
-  if (value === 'dryer 1') return 'dryer';
-  return '';
-}
+const MACHINE_HEADERS = {
+  'washing machine 1': 'washing1',
+  'washing machine 2': 'washing2',
+  'dryer 1': 'dryer',
+};
 
 function color(text, code) {
   if (process.env.NO_COLOR || (!process.stdout.isTTY && !process.env.FORCE_COLOR)) return text;
@@ -341,7 +351,7 @@ function resolveSlots(table, requests) {
   const columns = new Map();
   const rows = new Map();
   table.headers.forEach((header, index) => {
-    const machine = index === 0 ? '' : machineFromHeader(header);
+    const machine = index === 0 ? '' : MACHINE_HEADERS[header.toLowerCase()];
     if (machine && !columns.has(machine)) columns.set(machine, index);
   });
   table.rows.forEach((row) => {
@@ -384,15 +394,15 @@ async function bookSlots(session, slots, pageHtml, defaults) {
 
 async function main() {
   const command = parseCommand(process.argv.slice(2));
+  if (command.action === 'setup') return setup();
   const roomsUrl = config('LOAS_ROOMS_URL');
-  if (!roomsUrl) throw new Error('LOAS_ROOMS_URL is required. Set it in .env.');
+  if (!roomsUrl) throw new Error('Not set up yet. Run: laundry setup');
 
-  const baseUrl = new URL(roomsUrl).origin;
   const date = helsinkiDate(command.dateToken);
   const selectedRoomsUrl = roomsUrlForDate(roomsUrl, date);
-  const session = new Session(baseUrl, config('LOAS_SESSION_FILE', DEFAULT_SESSION_FILE));
+  const session = new Session(config('LOAS_SESSION_FILE', DEFAULT_SESSION_FILE));
   const page = await ensureLoggedIn(session, selectedRoomsUrl, config('LOAS_EMAIL'), config('LOAS_PASSWORD'));
-  const table = extractTable(page.text, page.url || selectedRoomsUrl);
+  const table = extractTable(page.text, page.url);
 
   if (command.action === 'list') return printAvailability(table, date);
 
@@ -400,9 +410,13 @@ async function main() {
   await bookSlots(session, slots, page.text, {
     date,
     housingComplexId: inferHousingComplexId(roomsUrl),
-    referer: page.url || selectedRoomsUrl,
+    referer: page.url,
   });
   console.log(`Booked ${slots.length} reservations.`);
 }
 
-main().catch((error) => die(error.message || String(error), error instanceof UsageError));
+main().catch((error) => {
+  console.error(`Error: ${error.message || error}`);
+  if (error instanceof UsageError) console.error(USAGE);
+  process.exit(1);
+});

@@ -1,0 +1,10 @@
+{
+  "name": "loas-laundry",
+  "description": "Check and book LOAS laundry slots (washing machines and dryer) by asking Claude.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Chi Nguyen",
+    "url": "https://github.com/cnyegun"
+  },
+  "repository": "https://github.com/cnyegun/loas-laundry"
+}
