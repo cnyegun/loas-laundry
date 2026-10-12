@@ -3,6 +3,7 @@
   "version": "0.2.1",
   "private": true,
   "description": "Tiny browserless LOAS laundry CLI.",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "commonjs",
   "engines": {
     "node": ">=18.17"

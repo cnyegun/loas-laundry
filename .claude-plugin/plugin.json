@@ -1,6 +1,7 @@
 {
   "name": "loas-laundry",
   "description": "Check, book and cancel LOAS laundry slots (washing machines and dryers) by asking Claude.",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "version": "0.2.1",
   "author": {
     "name": "Chi Nguyen",

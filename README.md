@@ -175,3 +175,9 @@ This saves your room's booking table (without your login details) to `room.html`
 **Uninstall:** on Mac/Linux run `npm uninstall -g --prefix ~/.local loas-laundry`, on Windows run `npm uninstall -g loas-laundry`. To also delete your saved login, delete the `~/.config/loas-laundry` folder.
 
 **Where is my password stored?** Only on your computer, in `~/.config/loas-laundry/config.json`, which only your user account can read. It's only ever sent to LOAS: the tool refuses to log in anywhere other than `https://intra.loas.fi`.
+
+## License
+
+Copyright Chi Nguyen. Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+You can use, change and share this tool for personal and other noncommercial purposes. Commercial use needs written permission. Contact me via [GitHub](https://github.com/cnyegun).
