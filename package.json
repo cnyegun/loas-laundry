@@ -1,6 +1,6 @@
 {
   "name": "loas-laundry",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Tiny browserless LOAS laundry CLI.",
   "type": "commonjs",
@@ -17,7 +17,6 @@
   },
   "dependencies": {
     "cheerio": "1.0.0",
-    "dotenv": "^16.4.7",
     "fetch-cookie": "^3.2.0",
     "tough-cookie": "^6.0.1"
   },

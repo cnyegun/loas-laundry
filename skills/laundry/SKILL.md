@@ -9,13 +9,14 @@ The `laundry` command lists and books slots in the user's LOAS laundry room. All
 
 ## Before the first use
 
-1. Run `laundry list`. If that says `command not found`, try `~/.local/bin/laundry list`. If that works, use `~/.local/bin/laundry` in place of `laundry` everywhere below.
-2. If neither is found, the CLI isn't installed. Ask the user whether to install it, then run:
+1. Run `laundry --version`. If that says `command not found`, try `~/.local/bin/laundry --version`. If that works, use `~/.local/bin/laundry` in place of `laundry` everywhere below.
+2. This skill needs version 0.2.1 or newer. If the command prints an error (version 0.1.0 had no `--version`) or a lower version, the CLI is too old: tell the user, and offer to update it with the install command below.
+3. If neither command is found, the CLI isn't installed. Ask the user whether to install it, then run:
    - Mac/Linux: `curl -fsSL https://raw.githubusercontent.com/cnyegun/loas-laundry/main/install.sh | sh`. This installs into `~/.local` without sudo. Your shell won't pick up the PATH change, so use `~/.local/bin/laundry` for the rest of the session.
-   - Windows: `npm install -g github:cnyegun/loas-laundry`
+   - Windows: `npm install -g https://codeload.github.com/cnyegun/loas-laundry/tar.gz/refs/tags/v0.2.1`
 
    Don't use `sudo`. If npm itself is missing, tell the user to install Node.js LTS from https://nodejs.org first.
-3. If the output says `Not set up yet` or `Still on login page after login`, the user must run `laundry setup` **in their own terminal window**. It asks for the laundry room URL, LOAS email and password, and hides the password while it's typed. Tell them to do this and wait.
+4. If `laundry list` says `Not set up yet` or `Still on login page after login`, the user must run `laundry setup` **in their own terminal window**. It asks for the laundry room URL, LOAS email and password, and hides the password while it's typed. Tell them to do this and wait.
    - Never ask for the LOAS password in chat, and never write it into a file or command yourself.
    - Don't try running `laundry setup` yourself, because it waits for typed input.
 

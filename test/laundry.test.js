@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
-  parseCommand, extractTable, debugTable, discoverMachines, resolveSlots, bookAll, cancelAll, writePrivateFile,
+  parseCommand, checkRoomsUrl, extractTable, debugTable, discoverMachines, resolveSlots, bookAll, cancelAll, writePrivateFile,
 } = require('../src/loas-laundry');
 
 const PAGE_URL = 'https://intra.loas.fi/complexes/123/leases/456/rooms?selected_date=2026-10-13';
@@ -33,7 +33,7 @@ function renderRoom({ headers, times = ['20:00', '20:30', '21:00'], yours = new 
 }
 
 // A pretend LOAS server that keeps the user's bookings in memory.
-function fakeLoas(headers, { failBooking = () => false, failCancel = () => false } = {}) {
+function fakeLoas(headers, { failBooking = () => false, failCancel = () => false, errorAfterBooking = () => false } = {}) {
   const times = ['20:00', '20:30', '21:00'];
   const yours = new Set();
   const posts = [];
@@ -53,6 +53,7 @@ function fakeLoas(headers, { failBooking = () => false, failCancel = () => false
       if ((cancel ? failCancel : failBooking)(key)) return { ok: false, status: 422, statusText: 'Unprocessable Entity', url: action, text: '' };
       if (cancel) yours.delete(key);
       else yours.add(key);
+      if (!cancel && errorAfterBooking(key)) return { ok: false, status: 500, statusText: 'Internal Server Error', url: action, text: '' };
       return page();
     },
   };
@@ -134,6 +135,19 @@ test('numbers unnumbered and repeated headers', () => {
   assert.deepEqual(ids(discoverMachines(['', 'Washing machine', 'Dryer', 'Dryer 1', 'Ironing board'])), ['washer1', 'dryer2', 'dryer1', 'machine1']);
 });
 
+test('does not mistake "laundry" for a dryer', () => {
+  assert.deepEqual(ids(discoverMachines(['', 'Laundry machine 1', 'Tumble dryer 1', 'Drying cabinet'])), ['machine1', 'dryer1', 'dryer2']);
+});
+
+test('only accepts LOAS laundry room URLs', () => {
+  const good = 'https://intra.loas.fi/complexes/123/leases/456/rooms';
+  assert.equal(checkRoomsUrl(good), good);
+  assert.throws(() => checkRoomsUrl('http://intra.loas.fi/complexes/123/leases/456/rooms'), /must start with https:\/\/intra\.loas\.fi/);
+  assert.throws(() => checkRoomsUrl('https://intra.loas.fi.evil.example/complexes/123/rooms'), /must start with/);
+  assert.throws(() => checkRoomsUrl('https://intra.loas.fi/customers/sign_in'), /not a laundry room page/);
+  assert.throws(() => checkRoomsUrl('intra.loas.fi/complexes/1/rooms'), /is not a URL/);
+});
+
 test('books every slot when all succeed', async () => {
   const loas = fakeLoas(['Washing machine 1', 'Washing machine 2']);
   const page = await loas.get();
@@ -151,6 +165,23 @@ test('undoes the slots it booked when a later one fails', async () => {
   assert.equal(loas.yours.size, 0);
   assert.deepEqual(loas.posts.filter((post) => post.kind === 'cancel').map((post) => post.key), ['1 20:00', '1 20:30']);
   assert.ok(loas.posts.filter((post) => post.kind === 'cancel').every((post) => !post.xhr));
+});
+
+test('keeps a slot that got booked despite an error response', async () => {
+  const loas = fakeLoas(['Washing machine 1'], { errorAfterBooking: (key) => key === '1 20:30' });
+  const page = await loas.get();
+  const slots = resolveSlots(extractTable(page.text, page.url), requests('today washer1:20h00-21h00'), 'book');
+  await bookAll(loas, PAGE_URL, page, slots);
+  assert.equal(loas.yours.size, 2);
+  assert.ok(loas.posts.every((post) => post.kind === 'book'));
+});
+
+test('says slots may be booked when LOAS stops answering mid-booking', async () => {
+  const loas = fakeLoas(['Washing machine 1'], { failBooking: (key) => key === '1 20:30' });
+  const page = await loas.get();
+  const slots = resolveSlots(extractTable(page.text, page.url), requests('today washer1:20h00-21h00'), 'book');
+  loas.get = async () => { throw new Error('Could not reach LOAS (ETIMEDOUT). Check your internet connection.'); };
+  await assert.rejects(bookAll(loas, PAGE_URL, page, slots), /Some slots may be booked\. Check with: laundry list/);
 });
 
 test('says which slots stay booked when the undo fails too', async () => {
@@ -191,4 +222,18 @@ test('saved files are private to the user', { skip: process.platform === 'win32'
   assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
   assert.equal(fs.readFileSync(file, 'utf8'), '{"a":1}');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('every install command and manifest points at this version', () => {
+  const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const { version } = JSON.parse(read('package.json'));
+  const tarball = `https://codeload.github.com/cnyegun/loas-laundry/tar.gz/refs/tags/v${version}`;
+  assert.equal(JSON.parse(read('package-lock.json')).version, version);
+  assert.equal(JSON.parse(read('.claude-plugin/plugin.json')).version, version);
+  assert.match(read('install.sh'), new RegExp(`^VERSION=${version.replace(/\./g, '\\.')}$`, 'm'));
+  assert.match(read('CHANGELOG.md'), new RegExp(`^## ${version.replace(/\./g, '\\.')} `, 'm'));
+  for (const doc of ['README.md', 'skills/laundry/SKILL.md']) {
+    assert.ok(read(doc).includes(`npm install -g ${tarball}`), `${doc} should install ${tarball}`);
+    assert.doesNotMatch(read(doc), /github:cnyegun/, `${doc} still installs with git`);
+  }
 });

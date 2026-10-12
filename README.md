@@ -56,7 +56,7 @@ It installs into your home folder, so it doesn't need your computer password. If
 **Windows:** copy this into PowerShell and press Enter:
 
 ```bash
-npm install -g github:cnyegun/loas-laundry
+npm install -g https://codeload.github.com/cnyegun/loas-laundry/tar.gz/refs/tags/v0.2.1
 ```
 
 ### 4. Connect it to your LOAS account
@@ -124,7 +124,7 @@ You can book several things at once. A typical wash, then dry:
 laundry tomorrow washers:18h30-19h30 dryer:19h30-20h30
 ```
 
-It's all or nothing. If one of the slots can't be booked (say someone took it a second ago), the slots it already booked in that command are cancelled again, so you never end up with half a booking.
+It's all or nothing. If one of the slots can't be booked (say someone took it a second ago), the slots it already booked in that command are cancelled again. If your internet connection drops in the middle, it can't do that, so it tells you to check `laundry list`.
 
 Rules for times:
 
@@ -160,6 +160,7 @@ This saves your room's booking table (without your login details) to `room.html`
 | `EACCES` or `permission denied` during install | You probably used `npm install -g` on Mac/Linux. Use the `curl` command from step 3 instead. |
 | `laundry: command not found` | Close and reopen the terminal. If it still happens, redo step 3. |
 | `Not set up yet` | Run `laundry setup`. |
+| `The laundry room URL must start with https://intra.loas.fi/` | Run `laundry setup` and paste the laundry room page address from your browser. |
 | `Still on login page after login` | Your email or password is wrong. Run `laundry setup` again. |
 | `... is not bookable` | Someone else took that slot, or it's in the past. Check `laundry list`. |
 | `Unknown machine "..."` | Your room has different machines. Use one of the names it lists, or check `laundry list`. |
@@ -173,4 +174,4 @@ This saves your room's booking table (without your login details) to `room.html`
 
 **Uninstall:** on Mac/Linux run `npm uninstall -g --prefix ~/.local loas-laundry`, on Windows run `npm uninstall -g loas-laundry`. To also delete your saved login, delete the `~/.config/loas-laundry` folder.
 
-**Where is my password stored?** Only on your computer, in `~/.config/loas-laundry/config.json`, which only your user account can read. It's only ever sent to LOAS.
+**Where is my password stored?** Only on your computer, in `~/.config/loas-laundry/config.json`, which only your user account can read. It's only ever sent to LOAS: the tool refuses to log in anywhere other than `https://intra.loas.fi`.

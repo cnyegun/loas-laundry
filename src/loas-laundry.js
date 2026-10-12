@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 'use strict';
 
-// A .env in the current directory still works, and overrides the saved config.
-require('dotenv').config();
-
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -16,6 +13,8 @@ const fetchCookie = fetchCookieModule.default || fetchCookieModule;
 const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'loas-laundry');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const DEFAULT_SESSION_FILE = path.join(CONFIG_DIR, 'session.json');
+const LOAS_ORIGIN = 'https://intra.loas.fi';
+const REQUEST_TIMEOUT_MS = 20000;
 
 class UsageError extends Error {}
 
@@ -35,14 +34,16 @@ function failUsage(message) {
   throw new UsageError(message);
 }
 
-// Writes a file only the current user can read. The mode options only apply when creating,
-// so chmod as well to fix files and folders made by older versions.
+// Writes a file only the current user can read. Also fixes the folder made by older versions.
 function writePrivateFile(file, content) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (dir === CONFIG_DIR) fs.chmodSync(dir, 0o700);
-  fs.writeFileSync(file, content, { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
+  // Write a new private file, then swap it in, so the content is never readable by others or half-written.
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, content, { mode: 0o600 });
+  fs.chmodSync(temp, 0o600);
+  fs.renameSync(temp, file);
 }
 
 function readSavedConfig() {
@@ -74,7 +75,7 @@ async function setup() {
 
   console.log('Open the LOAS laundry room page in your browser and copy its URL.');
   const roomsUrl = await ask('Laundry room URL', savedConfig.LOAS_ROOMS_URL);
-  inferHousingComplexId(roomsUrl);
+  checkRoomsUrl(roomsUrl);
   const email = await ask('LOAS email', savedConfig.LOAS_EMAIL);
   const password = await ask('LOAS password', '', true);
   rl.close();
@@ -158,11 +159,19 @@ function roomsUrlForDate(roomsUrl, date) {
   return url.toString();
 }
 
-function inferHousingComplexId(roomsUrl) {
-  const parts = new URL(roomsUrl).pathname.split('/');
-  const index = parts.indexOf('complexes');
-  if (index === -1 || !parts[index + 1]) throw new Error('Could not infer housing complex id from LOAS_ROOMS_URL.');
-  return parts[index + 1];
+// The saved password is only ever sent to LOAS, so the rooms URL must be a LOAS laundry room page.
+function checkRoomsUrl(roomsUrl) {
+  let url;
+  try {
+    url = new URL(roomsUrl);
+  } catch (_) {
+    throw new Error(`"${roomsUrl}" is not a URL. Copy the laundry room page address from your browser.`);
+  }
+  if (url.origin !== LOAS_ORIGIN) throw new Error(`The laundry room URL must start with ${LOAS_ORIGIN}/. Run: laundry setup`);
+  if (!/\/complexes\/\d+\//.test(url.pathname)) {
+    throw new Error('That is not a laundry room page. It looks like https://intra.loas.fi/complexes/123/leases/456/rooms');
+  }
+  return roomsUrl;
 }
 
 function loadCookieJar(file) {
@@ -188,6 +197,7 @@ class Session {
     try {
       response = await this.fetch(url, {
         ...options,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         headers: {
           'User-Agent': 'LOAS laundry helper',
           Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -195,7 +205,8 @@ class Session {
         },
       });
     } catch (error) {
-      throw new Error(`Could not reach LOAS (${error.cause?.code || error.message}). Check your internet connection.`);
+      const reason = error.name === 'TimeoutError' ? `no answer in ${REQUEST_TIMEOUT_MS / 1000} seconds` : error.cause?.code || error.message;
+      throw new Error(`Could not reach LOAS (${reason}). Check your internet connection.`);
     }
     saveCookieJar(this.jar, this.cookieFile);
     return {
@@ -248,6 +259,7 @@ async function ensureLoggedIn(session, roomsUrl, email, password) {
   if (!email || !password) throw new Error('Email and password are missing. Run: laundry setup');
 
   const action = loginAction($, page.url);
+  if (new URL(action).origin !== LOAS_ORIGIN) throw new Error(`Refusing to send your password to ${new URL(action).origin}.`);
   page = await session.postForm(action, {
     authenticity_token: csrfToken($),
     'customer[email]': email,
@@ -339,7 +351,7 @@ function rowsByTime(table) {
 
 const MACHINE_KINDS = [
   ['washer', /wash|pesu|tvätt/i],
-  ['dryer', /dry|kuiva|tork/i],
+  ['dryer', /\bdry|kuiva|tork/i],
 ];
 
 // Names each machine column by its kind and number, e.g. "Washing machine 2" becomes washer2.
@@ -504,9 +516,17 @@ async function postSlots(session, slots, page) {
 // Books every slot or none: if any slot fails, the ones this run booked are cancelled again.
 async function bookAll(session, roomsUrl, page, slots) {
   const failure = await postSlots(session, slots, page);
-  let after = await loadTable(session, roomsUrl);
+  const reload = async () => {
+    try {
+      return await loadTable(session, roomsUrl);
+    } catch (error) {
+      throw new Error(`${error.message} Some slots may be booked. Check with: laundry list`);
+    }
+  };
+  let after = await reload();
   const booked = yoursNow(after.table, slots);
-  if (!failure && booked.length === slots.length) return;
+  // The table is the truth: an error response for a slot that did get booked is not a failure.
+  if (booked.length === slots.length) return;
 
   const missing = slots.filter((slot) => !booked.some((done) => done.column === slot.column && done.time === slot.time));
   const reason = failure
@@ -515,7 +535,7 @@ async function bookAll(session, roomsUrl, page, slots) {
   if (!booked.length) throw new Error(`${reason}. Nothing was booked.`);
 
   await postSlots(session, booked, after.page);
-  after = await loadTable(session, roomsUrl);
+  after = await reload();
   const stuck = yoursNow(after.table, booked);
   if (stuck.length) throw new Error(`${reason}. Undoing failed, these are still booked: ${stuck.map(slotLabel).join(', ')}.`);
   throw new Error(`${reason}. Undid ${booked.length} slots, nothing is booked.`);
@@ -537,6 +557,7 @@ async function main() {
   if (command.action === 'setup') return setup();
   const roomsUrl = config('LOAS_ROOMS_URL');
   if (!roomsUrl) throw new Error('Not set up yet. Run: laundry setup');
+  checkRoomsUrl(roomsUrl);
 
   const date = helsinkiDate(command.dateToken);
   const selectedRoomsUrl = roomsUrlForDate(roomsUrl, date);
@@ -557,7 +578,8 @@ async function main() {
 }
 
 module.exports = {
-  parseCommand, extractTable, debugTable, discoverMachines, expandMachine, resolveSlots, bookAll, cancelAll, writePrivateFile,
+  parseCommand, checkRoomsUrl, extractTable, debugTable, discoverMachines, expandMachine, resolveSlots, bookAll, cancelAll,
+  writePrivateFile,
 };
 
 if (require.main === module) {
