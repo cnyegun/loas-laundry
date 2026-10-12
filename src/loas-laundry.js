@@ -21,13 +21,28 @@ class UsageError extends Error {}
 
 const USAGE = `Usage:
   laundry setup
-  laundry list
-  laundry list tomorrow
-  laundry today both:18h30-19h30 dryer:19h30-20h30
-  laundry tomorrow both:18h30-19h30 dryer:19h30-20h30`;
+  laundry list [today|tomorrow]
+  laundry today washer1:18h30-19h30
+  laundry tomorrow washers:18h30-19h30 dryer:19h30-20h30
+  laundry cancel today washer1:18h30-19h30
+  laundry debug [today|tomorrow]
+  laundry --version
+
+Machines are named as shown under the headers in laundry list (washer1, dryer1, ...).
+washers or both means every washer, dryers means every dryer.`;
 
 function failUsage(message) {
   throw new UsageError(message);
+}
+
+// Writes a file only the current user can read. The mode options only apply when creating,
+// so chmod as well to fix files and folders made by older versions.
+function writePrivateFile(file, content) {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (dir === CONFIG_DIR) fs.chmodSync(dir, 0o700);
+  fs.writeFileSync(file, content, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
 }
 
 function readSavedConfig() {
@@ -66,41 +81,46 @@ async function setup() {
   process.stdout.write('\n');
   if (!roomsUrl || !email || !password) throw new Error('URL, email and password are all required.');
 
-  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify({ LOAS_ROOMS_URL: roomsUrl, LOAS_EMAIL: email, LOAS_PASSWORD: password }, null, 2), { mode: 0o600 });
-  fs.chmodSync(CONFIG_FILE, 0o600);
+  writePrivateFile(CONFIG_FILE, JSON.stringify({ LOAS_ROOMS_URL: roomsUrl, LOAS_EMAIL: email, LOAS_PASSWORD: password }, null, 2));
   // Credentials may have changed, so log in fresh next time.
   fs.rmSync(DEFAULT_SESSION_FILE, { force: true });
   console.log(`Saved to ${CONFIG_FILE}. Try: laundry list`);
 }
 
+const isDay = (token) => token === 'today' || token === 'tomorrow';
+
 function parseCommand(argv) {
-  if (argv.length === 1 && argv[0] === 'setup') return { action: 'setup' };
-  if (argv.length === 1 && argv[0] === 'list') return { action: 'list', dateToken: 'today' };
-  if (argv.length === 2 && argv[0] === 'list' && argv[1] === 'tomorrow') return { action: 'list', dateToken: 'tomorrow' };
-  if ((argv[0] === 'today' || argv[0] === 'tomorrow') && argv.length > 1) {
-    return { action: 'book', dateToken: argv[0], requests: parseRanges(argv.slice(1)) };
+  const [first, second] = argv;
+  if (!argv.length || ['help', '--help', '-h'].includes(first)) return { action: 'help' };
+  if (argv.length === 1 && ['--version', '-v'].includes(first)) return { action: 'version' };
+  if (argv.length === 1 && first === 'setup') return { action: 'setup' };
+  if ((first === 'list' || first === 'debug') && (argv.length === 1 || (argv.length === 2 && isDay(second)))) {
+    return { action: first, dateToken: second || 'today' };
+  }
+  if (isDay(first) && argv.length > 1) return { action: 'book', dateToken: first, requests: parseRanges(argv.slice(1)) };
+  if (first === 'cancel' && isDay(second) && argv.length > 2) {
+    return { action: 'cancel', dateToken: second, requests: parseRanges(argv.slice(2)) };
   }
   failUsage('Unsupported command.');
 }
 
+// Machine names are only checked for shape here. They are matched against the room's table after it loads.
 function parseRanges(tokens) {
   const requests = [];
   for (const token of tokens) {
     const separator = token.indexOf(':');
-    if (separator === -1 || separator !== token.lastIndexOf(':')) failUsage(`Invalid range "${token}". Use both:18h30-19h30.`);
+    if (separator === -1 || separator !== token.lastIndexOf(':')) failUsage(`Invalid range "${token}". Use washer1:18h30-19h30.`);
 
-    const machines = expandMachine(token.slice(0, separator));
+    const machine = token.slice(0, separator).toLowerCase();
+    if (!/^[a-z]+\d*$/.test(machine)) failUsage(`Invalid machine in "${token}". Use a name like washer1, washers or dryer.`);
     const parts = token.slice(separator + 1).split('-');
-    if (parts.length !== 2) failUsage(`Invalid range "${token}". Use both:18h30-19h30.`);
+    if (parts.length !== 2) failUsage(`Invalid range "${token}". Use washer1:18h30-19h30.`);
 
     const start = parseUserTime(parts[0], token);
     const end = parseUserTime(parts[1], token);
     if (end <= start || (end - start) % 30 !== 0) failUsage(`Invalid range "${token}". End must be after start in 30-minute steps.`);
 
-    for (const machine of machines) {
-      for (let time = start; time < end; time += 30) requests.push({ machine, time: formatTime(time) });
-    }
+    for (let time = start; time < end; time += 30) requests.push({ machine, time: formatTime(time) });
   }
   return requests;
 }
@@ -115,12 +135,6 @@ function parseUserTime(value, context) {
     failUsage(`Invalid time in "${context}". LOAS slots are 30-minute slots only.`);
   }
   return hour * 60 + minute;
-}
-
-function expandMachine(machine) {
-  if (machine === 'both') return ['washing1', 'washing2'];
-  if (machine === 'dryer') return ['dryer'];
-  failUsage(`Unsupported machine "${machine}". Use both or dryer.`);
 }
 
 function formatTime(totalMinutes) {
@@ -159,8 +173,7 @@ function loadCookieJar(file) {
 }
 
 function saveCookieJar(jar, file) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(jar.toJSON(), null, 2), 'utf8');
+  writePrivateFile(file, JSON.stringify(jar.toJSON(), null, 2));
 }
 
 class Session {
@@ -171,14 +184,19 @@ class Session {
   }
 
   async request(url, options = {}) {
-    const response = await this.fetch(url, {
-      ...options,
-      headers: {
-        'User-Agent': 'LOAS laundry helper',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        ...options.headers,
-      },
-    });
+    let response;
+    try {
+      response = await this.fetch(url, {
+        ...options,
+        headers: {
+          'User-Agent': 'LOAS laundry helper',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          ...options.headers,
+        },
+      });
+    } catch (error) {
+      throw new Error(`Could not reach LOAS (${error.cause?.code || error.message}). Check your internet connection.`);
+    }
     saveCookieJar(this.jar, this.cookieFile);
     return {
       ok: response.ok,
@@ -254,12 +272,28 @@ function inputValue($form, name) {
   return $form.find(`input[name="${name}"]`).first().attr('value') || '';
 }
 
-function reservationForm($, form) {
+function formDetails($, form, pageUrl) {
   const $form = $(form);
-  const action = $form.attr('action') || '';
-  return action.includes('time_slot_products/') && action.includes('/time_slot_reservations')
-    && inputValue($form, '_method').toLowerCase() !== 'delete'
-    && !text($, form).toLowerCase().includes('cancel');
+  const fields = {};
+  $form.find('input[name]').each((_, input) => { fields[$(input).attr('name')] = $(input).attr('value') || ''; });
+  return {
+    action: new URL($form.attr('action') || '', pageUrl).toString(),
+    fields,
+    remote: $form.attr('data-remote') === 'true',
+  };
+}
+
+// A free slot has a "Book" form. Your own booking has a "Cancel" form, which Rails marks with _method=delete.
+function slotForms($, cell, pageUrl) {
+  const forms = { book: null, cancel: null };
+  $(cell).find('form').each((_, form) => {
+    const $form = $(form);
+    if (!($form.attr('action') || '').includes('/time_slot_reservations')) return;
+    const cancel = inputValue($form, '_method').toLowerCase() === 'delete' || text($, form).toLowerCase().includes('cancel');
+    const kind = cancel ? 'cancel' : 'book';
+    if (!forms[kind]) forms[kind] = formDetails($, form, pageUrl);
+  });
+  return forms;
 }
 
 function extractTable(html, pageUrl) {
@@ -273,22 +307,19 @@ function extractTable(html, pageUrl) {
   const rows = [];
   $table.find('tbody tr').each((_, row) => {
     const cells = [];
-    $(row).children('th, td').each((__, cell) => {
-      const $form = $(cell).find('form').filter((___, form) => reservationForm($, form)).first();
-      const action = $form.attr('action') || '';
-      cells.push({
-        text: text($, cell),
-        form: $form.length ? {
-          action: new URL(action, pageUrl).toString(),
-          date: inputValue($form, 'date'),
-          housingComplexId: inputValue($form, 'housing_complex_id'),
-          index: inputValue($form, 'index'),
-        } : null,
-      });
-    });
-    if (cells.some((cell) => cell.text || cell.form)) rows.push({ cells });
+    $(row).children('th, td').each((__, cell) => cells.push({ text: text($, cell), ...slotForms($, cell, pageUrl) }));
+    if (cells.some((cell) => cell.text || cell.book || cell.cancel)) rows.push({ cells });
   });
   return { headers, rows };
+}
+
+// Prints only the booking table, with CSRF tokens removed, so it is safe to share for debugging.
+function debugTable(html) {
+  const $ = cheerio.load(html);
+  const $table = $('table.booking-table').first();
+  if (!$table.length) return 'No booking table found.';
+  $table.find('input[name="authenticity_token"]').attr('value', 'REDACTED');
+  return $.html($table);
 }
 
 // Normalizes "8:00" to "08:00" so rows can be matched against requested times.
@@ -297,11 +328,62 @@ function tableTime(value = '') {
   return match ? `${match[1].padStart(2, '0')}:${match[2]}` : '';
 }
 
-const MACHINE_HEADERS = {
-  'washing machine 1': 'washing1',
-  'washing machine 2': 'washing2',
-  'dryer 1': 'dryer',
-};
+function rowsByTime(table) {
+  const rows = new Map();
+  for (const row of table.rows) {
+    const time = tableTime(row.cells[0]?.text);
+    if (time) rows.set(time, row);
+  }
+  return rows;
+}
+
+const MACHINE_KINDS = [
+  ['washer', /wash|pesu|tvätt/i],
+  ['dryer', /dry|kuiva|tork/i],
+];
+
+// Names each machine column by its kind and number, e.g. "Washing machine 2" becomes washer2.
+function discoverMachines(headers) {
+  const machines = headers.slice(1).map((label, index) => ({
+    label,
+    column: index + 1,
+    kind: (MACHINE_KINDS.find(([, pattern]) => pattern.test(label)) || ['machine'])[0],
+    number: Number(/(\d+)\s*$/.exec(label)?.[1]) || 0,
+  }));
+
+  // Numbered headers keep their number first. Unnumbered or repeated ones then take the next free number.
+  const used = new Set();
+  for (const machine of machines) {
+    const id = `${machine.kind}${machine.number}`;
+    if (machine.number && !used.has(id)) {
+      machine.id = id;
+      used.add(id);
+    }
+  }
+  for (const machine of machines.filter((m) => !m.id)) {
+    let number = 1;
+    while (used.has(`${machine.kind}${number}`)) number += 1;
+    machine.id = `${machine.kind}${number}`;
+    used.add(machine.id);
+  }
+  return machines.map(({ id, kind, label, column }) => ({ id, kind, label, column }));
+}
+
+const MACHINE_GROUPS = { washers: 'washer', both: 'washer', dryers: 'dryer' };
+
+function expandMachine(name, machines) {
+  const exact = machines.find((machine) => machine.id === name);
+  if (exact) return [exact];
+
+  const ids = machines.map((machine) => machine.id).join(', ') || 'no machines';
+  const kind = MACHINE_GROUPS[name] || (name === 'washer' || name === 'dryer' ? name : '');
+  if (!kind) throw new Error(`Unknown machine "${name}". This room has: ${ids}.`);
+
+  const matches = machines.filter((machine) => machine.kind === kind);
+  if (!matches.length) throw new Error(`This room has no ${kind}. It has: ${ids}.`);
+  if (MACHINE_GROUPS[name] || matches.length === 1) return matches;
+  throw new Error(`This room has ${matches.length} ${kind}s: ${matches.map((machine) => machine.id).join(', ')}. Pick one, or use ${kind}s for all of them.`);
+}
 
 function color(text, code) {
   if (process.env.NO_COLOR || (!process.stdout.isTTY && !process.env.FORCE_COLOR)) return text;
@@ -318,10 +400,11 @@ function padVisible(text, width) {
 }
 
 function cellLabel(cell) {
-  if (cell?.form) return color('Book', '96');
+  if (cell?.book) return color('Book', '96');
+  if (cell?.cancel) return color('Yours', '1;32');
   const value = cell?.text || '';
   const lower = value.toLowerCase();
-  if (lower.includes('your reservation') || lower.includes('cancel')) return color('Yours', '1;32');
+  if (lower.includes('your reservation')) return color('Yours', '1;32');
   if (lower.includes('booked')) return color('Booked', '90');
   if (lower.includes('past')) return color('Past', '90');
   return value || '-';
@@ -331,69 +414,126 @@ function printAvailability(table, date) {
   console.log(`Date: ${date}`);
   if (!table.headers.length || !table.rows.length) return console.log('No booking table found.');
 
-  const headers = ['Time', ...table.headers.slice(1)];
+  const machines = discoverMachines(table.headers);
+  const headers = ['Time', ...machines.map((machine) => machine.label)];
+  const ids = ['', ...machines.map((machine) => machine.id)];
   const rows = table.rows.map((row) => {
     const time = tableTime(row.cells[0]?.text);
-    return time ? headers.map((_, index) => (index === 0 ? time : cellLabel(row.cells[index]))) : null;
+    return time ? [time, ...machines.map((machine) => cellLabel(row.cells[machine.column]))] : null;
   }).filter(Boolean);
-  const widths = headers.map((header, index) => Math.max(visibleLength(header), ...rows.map((row) => visibleLength(row[index] || ''))));
+  const widths = headers.map((header, index) => Math.max(visibleLength(header), visibleLength(ids[index]), ...rows.map((row) => visibleLength(row[index] || ''))));
   const border = (left, middle, right) => left + widths.map((width) => '─'.repeat(width + 2)).join(middle) + right;
   const line = (row) => '│ ' + row.map((cell, index) => padVisible(cell, widths[index])).join(' │ ') + ' │';
 
   console.log(border('┌', '┬', '┐'));
   console.log(line(headers));
+  console.log(line(ids.map((id) => (id ? color(id, '1') : id))));
   console.log(border('├', '┼', '┤'));
   for (const row of rows) console.log(line(row));
   console.log(border('└', '┴', '┘'));
 }
 
-function resolveSlots(table, requests) {
-  const columns = new Map();
-  const rows = new Map();
-  table.headers.forEach((header, index) => {
-    const machine = index === 0 ? '' : MACHINE_HEADERS[header.toLowerCase()];
-    if (machine && !columns.has(machine)) columns.set(machine, index);
-  });
-  table.rows.forEach((row) => {
-    const time = tableTime(row.cells[0]?.text);
-    if (time) rows.set(time, row);
-  });
+// Matches requests to table cells. Booking needs free cells, cancelling needs the user's own.
+function resolveSlots(table, requests, mode) {
+  const machines = discoverMachines(table.headers);
+  const rows = rowsByTime(table);
+  const slots = new Map();
 
-  return requests.map((request) => {
-    const column = columns.get(request.machine);
-    if (column === undefined) throw new Error(`Could not find ${request.machine} in the LOAS table.`);
-
+  for (const request of requests) {
+    const matched = expandMachine(request.machine, machines);
     const row = rows.get(request.time);
     if (!row) throw new Error(`Could not find ${request.time} in the LOAS table.`);
 
-    const cell = row.cells[column];
-    if (!cell?.form) throw new Error(`${request.machine} at ${request.time} is not bookable.`);
-    if (!cell.form.index) throw new Error(`${request.machine} at ${request.time} is missing a reservation index.`);
-    return { machine: request.machine, time: request.time, ...cell.form };
+    for (const machine of matched) {
+      const slot = { machine: machine.id, column: machine.column, time: request.time };
+      const label = slotLabel(slot);
+      if (slots.has(label)) continue;
+      const cell = row.cells[machine.column];
+      if (mode === 'cancel' && !cell?.cancel) throw new Error(`${label} is not your booking.`);
+      if (mode === 'book' && !cell?.book) throw new Error(`${label} ${cell?.cancel ? 'is already yours' : 'is not bookable'}.`);
+      slots.set(label, { ...slot, form: mode === 'cancel' ? cell.cancel : cell.book });
+    }
+  }
+  return [...slots.values()];
+}
+
+function slotLabel(slot) {
+  return `${slot.machine} at ${slot.time}`;
+}
+
+// Returns the slots that are the user's bookings in this table, each with its current cancel form.
+function yoursNow(table, slots) {
+  const rows = rowsByTime(table);
+  return slots.flatMap((slot) => {
+    const cancel = rows.get(slot.time)?.cells[slot.column]?.cancel;
+    return cancel ? [{ ...slot, form: cancel }] : [];
   });
 }
 
-async function bookSlots(session, slots, pageHtml, defaults) {
-  const token = csrfToken(cheerio.load(pageHtml));
+async function loadTable(session, roomsUrl) {
+  const page = await session.get(roomsUrl);
+  const table = extractTable(page.text, page.url);
+  if (!table.headers.length) throw new Error('Could not reload the LOAS table to check the result. Run: laundry list');
+  return { page, table };
+}
+
+// Submits each slot's own form like the browser does. Stops at the first failure and returns it
+// instead of throwing, so the caller can reload the table and see what actually happened.
+async function postSlots(session, slots, page) {
+  const token = csrfToken(cheerio.load(page.text));
   for (const slot of slots) {
-    const response = await session.postForm(slot.action, {
-      authenticity_token: token,
-      date: slot.date || defaults.date,
-      housing_complex_id: slot.housingComplexId || defaults.housingComplexId,
-      index: slot.index,
-    }, {
-      Accept: '*/*;q=0.5, text/javascript, application/javascript, application/ecmascript, application/x-ecmascript',
-      'X-CSRF-Token': token,
-      'X-Requested-With': 'XMLHttpRequest',
-      Origin: new URL(slot.action).origin,
-      Referer: defaults.referer,
-    });
-    if (!response.ok) throw new Error(`Booking failed with HTTP ${response.status} ${response.statusText}`);
+    const { action, fields, remote } = slot.form;
+    const headers = { Origin: new URL(action).origin, Referer: page.url };
+    if (remote) {
+      Object.assign(headers, {
+        Accept: '*/*;q=0.5, text/javascript, application/javascript, application/ecmascript, application/x-ecmascript',
+        'X-CSRF-Token': token,
+        'X-Requested-With': 'XMLHttpRequest',
+      });
+    }
+    try {
+      const response = await session.postForm(action, { ...fields, authenticity_token: token }, headers);
+      if (!response.ok) return { slot, error: `HTTP ${response.status} ${response.statusText}` };
+    } catch (error) {
+      return { slot, error: error.message || String(error) };
+    }
   }
+  return null;
+}
+
+// Books every slot or none: if any slot fails, the ones this run booked are cancelled again.
+async function bookAll(session, roomsUrl, page, slots) {
+  const failure = await postSlots(session, slots, page);
+  let after = await loadTable(session, roomsUrl);
+  const booked = yoursNow(after.table, slots);
+  if (!failure && booked.length === slots.length) return;
+
+  const missing = slots.filter((slot) => !booked.some((done) => done.column === slot.column && done.time === slot.time));
+  const reason = failure
+    ? `${slotLabel(failure.slot)} could not be booked (${failure.error})`
+    : `${missing.map(slotLabel).join(', ')} did not get booked`;
+  if (!booked.length) throw new Error(`${reason}. Nothing was booked.`);
+
+  await postSlots(session, booked, after.page);
+  after = await loadTable(session, roomsUrl);
+  const stuck = yoursNow(after.table, booked);
+  if (stuck.length) throw new Error(`${reason}. Undoing failed, these are still booked: ${stuck.map(slotLabel).join(', ')}.`);
+  throw new Error(`${reason}. Undid ${booked.length} slots, nothing is booked.`);
+}
+
+async function cancelAll(session, roomsUrl, page, slots) {
+  const failure = await postSlots(session, slots, page);
+  const { table } = await loadTable(session, roomsUrl);
+  const left = yoursNow(table, slots);
+  if (!left.length) return;
+  const reason = failure ? `${slotLabel(failure.slot)} could not be cancelled (${failure.error}). ` : '';
+  throw new Error(`${reason}Still booked: ${left.map(slotLabel).join(', ')}.`);
 }
 
 async function main() {
   const command = parseCommand(process.argv.slice(2));
+  if (command.action === 'help') return console.log(USAGE);
+  if (command.action === 'version') return console.log(require('../package.json').version);
   if (command.action === 'setup') return setup();
   const roomsUrl = config('LOAS_ROOMS_URL');
   if (!roomsUrl) throw new Error('Not set up yet. Run: laundry setup');
@@ -402,21 +542,28 @@ async function main() {
   const selectedRoomsUrl = roomsUrlForDate(roomsUrl, date);
   const session = new Session(config('LOAS_SESSION_FILE', DEFAULT_SESSION_FILE));
   const page = await ensureLoggedIn(session, selectedRoomsUrl, config('LOAS_EMAIL'), config('LOAS_PASSWORD'));
+  if (command.action === 'debug') return console.log(debugTable(page.text));
   const table = extractTable(page.text, page.url);
 
   if (command.action === 'list') return printAvailability(table, date);
 
-  const slots = resolveSlots(table, command.requests);
-  await bookSlots(session, slots, page.text, {
-    date,
-    housingComplexId: inferHousingComplexId(roomsUrl),
-    referer: page.url,
-  });
+  const slots = resolveSlots(table, command.requests, command.action);
+  if (command.action === 'cancel') {
+    await cancelAll(session, selectedRoomsUrl, page, slots);
+    return console.log(`Cancelled ${slots.length} reservations.`);
+  }
+  await bookAll(session, selectedRoomsUrl, page, slots);
   console.log(`Booked ${slots.length} reservations.`);
 }
 
-main().catch((error) => {
-  console.error(`Error: ${error.message || error}`);
-  if (error instanceof UsageError) console.error(USAGE);
-  process.exit(1);
-});
+module.exports = {
+  parseCommand, extractTable, debugTable, discoverMachines, expandMachine, resolveSlots, bookAll, cancelAll, writePrivateFile,
+};
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`Error: ${error.message || error}`);
+    if (error instanceof UsageError) console.error(USAGE);
+    process.exit(1);
+  });
+}

@@ -4,7 +4,8 @@ Book LOAS laundry slots from your terminal, without clicking through the LOAS we
 
 ```bash
 laundry list                              # see which slots are free today
-laundry today both:18h30-19h30            # book both washing machines, 18:30–19:30
+laundry today washer1:18h30-19h30         # book washing machine 1, 18:30–19:30
+laundry cancel today washer1:18h30-19h30  # cancel it again
 ```
 
 ## Use with Claude Code
@@ -44,7 +45,15 @@ Download the **LTS** version from [nodejs.org](https://nodejs.org) and install i
 
 ### 3. Install the laundry tool
 
-Copy this into the terminal and press Enter:
+**Mac or Linux:** copy this into the terminal and press Enter:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cnyegun/loas-laundry/main/install.sh | sh
+```
+
+It installs into your home folder, so it doesn't need your computer password. If it tells you to, close the terminal and open a new one.
+
+**Windows:** copy this into PowerShell and press Enter:
 
 ```bash
 npm install -g github:cnyegun/loas-laundry
@@ -78,6 +87,7 @@ You get a table like this:
 ```
 ┌───────┬───────────────────┬───────────────────┬─────────┐
 │ Time  │ Washing machine 1 │ Washing machine 2 │ Dryer 1 │
+│       │ washer1           │ washer2           │ dryer1  │
 ├───────┼───────────────────┼───────────────────┼─────────┤
 │ 18:30 │ Book              │ Book              │ Booked  │
 │ 19:00 │ Yours             │ Yours             │ Book    │
@@ -89,47 +99,78 @@ You get a table like this:
 - **Booked**: someone else has it
 - **Past**: already over
 
+The second header line is the machine's short name (`washer1`, `dryer1`, ...). You type it when you book or cancel. Your laundry room may have more or fewer machines than this example. `laundry list` always shows the ones in your room.
+
 ### Book slots
 
 Say **when** (`today` or `tomorrow`), then **what** and **what time**:
 
 ```bash
-laundry today both:18h30-19h30
+laundry today washer1:18h30-19h30
 ```
 
-This books both washing machines from 18:30 to 19:30.
+This books washing machine 1 from 18:30 to 19:30.
 
 What you can book:
 
-- `both`: washing machines 1 and 2
-- `dryer`: the dryer
+- One machine by its short name from `laundry list`: `washer1`, `washer2`, `dryer1`, ...
+- `washers` (or `both`): every washing machine in your room
+- `dryers`: every dryer
+- `washer` or `dryer`: the only washer or dryer, if your room has just one
 
 You can book several things at once. A typical wash, then dry:
 
 ```bash
-laundry tomorrow both:18h30-19h30 dryer:19h30-20h30
+laundry tomorrow washers:18h30-19h30 dryer:19h30-20h30
 ```
+
+It's all or nothing. If one of the slots can't be booked (say someone took it a second ago), the slots it already booked in that command are cancelled again, so you never end up with half a booking.
 
 Rules for times:
 
 - Use the 24-hour clock: `18h30` means 18:30 (6:30 pm).
 - Times must be on the hour or half hour (`18h00` or `18h30`, not `18h15`).
 
+### Cancel slots
+
+Put `cancel` in front, and use the same day, machines and times as when you booked:
+
+```bash
+laundry cancel today washer1:18h30-19h30
+laundry cancel tomorrow washers:18h30-19h30 dryer:19h30-20h30
+```
+
+You can only cancel your own bookings (**Yours** in `laundry list`).
+
+### Your laundry room looks different?
+
+The tool reads the machines from your room's booking table, so any number of washers and dryers should work. If something looks wrong, run:
+
+```bash
+laundry debug > room.html
+```
+
+This saves your room's booking table (without your login details) to `room.html`. Open an issue on GitHub and attach it. Have a quick look at the file first and remove any names you don't want to share.
+
 ## Something went wrong?
 
 | You see | What to do |
 |---|---|
 | `npm: command not found` | Node.js isn't installed. Do step 1, then close and reopen the terminal. |
-| `EACCES` or `permission denied` during install | On Mac/Linux, run the step 3 command with `sudo` in front: `sudo npm install -g github:cnyegun/loas-laundry` (it asks for your computer password). |
+| `EACCES` or `permission denied` during install | You probably used `npm install -g` on Mac/Linux. Use the `curl` command from step 3 instead. |
 | `laundry: command not found` | Close and reopen the terminal. If it still happens, redo step 3. |
 | `Not set up yet` | Run `laundry setup`. |
 | `Still on login page after login` | Your email or password is wrong. Run `laundry setup` again. |
 | `... is not bookable` | Someone else took that slot, or it's in the past. Check `laundry list`. |
+| `Unknown machine "..."` | Your room has different machines. Use one of the names it lists, or check `laundry list`. |
+| `This room has 2 dryers` | Pick one (`dryer1`), or use `dryers` for all of them. |
+| `... is not your booking` | You can only cancel slots that show **Yours** in `laundry list`. |
+| `... Undid N slots, nothing is booked` | One slot couldn't be booked, so the others were cancelled again. Check `laundry list` and try other times. |
 
 **Changed your password?** Run `laundry setup` again. Press Enter to keep the URL and email it shows you.
 
-**Update to the latest version:** run the step 3 command again.
+**Update to the latest version:** run the step 3 command again. `laundry --version` shows which version you have.
 
-**Uninstall:** `npm uninstall -g loas-laundry`
+**Uninstall:** on Mac/Linux run `npm uninstall -g --prefix ~/.local loas-laundry`, on Windows run `npm uninstall -g loas-laundry`. To also delete your saved login, delete the `~/.config/loas-laundry` folder.
 
 **Where is my password stored?** Only on your computer, in `~/.config/loas-laundry/config.json`, which only your user account can read. It's only ever sent to LOAS.

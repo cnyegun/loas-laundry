@@ -1,6 +1,6 @@
 {
   "name": "loas-laundry",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Tiny browserless LOAS laundry CLI.",
   "type": "commonjs",
@@ -12,6 +12,7 @@
   },
   "scripts": {
     "check": "node --check src/loas-laundry.js",
+    "test": "node --test",
     "list": "node src/loas-laundry.js list"
   },
   "dependencies": {
